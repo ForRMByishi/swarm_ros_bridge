@@ -37,6 +37,8 @@
 namespace
 {
 const double BITRATE_QUEUE_WINDOW_SEC = 0.2;
+const double DEFAULT_REPLAY_INTERVAL_SEC = 0.01;
+const double FAULT_REPLAY_RATE_MULTIPLIER = 2.0;
 const size_t MAX_BITRATE_QUEUE_MESSAGES = 30;
 
 std::vector<std::unique_ptr<std::atomic<bool>>> send_thread_flags;
@@ -116,6 +118,31 @@ SimCommFaultPolicy parse_fault_policy(const std::string &policy_name,
 bool is_node_fault_active_locked()
 {
   return node_fault_active && std::chrono::steady_clock::now() < node_fault_until;
+}
+
+/**
+ * 获取故障缓存恢复时的回放间隔。
+ *
+ * Parameters:
+ *   topic_index: 当前方向的话题索引。
+ *   is_send_topic: true 表示发送话题，false 表示接收话题。
+ *
+ * Returns:
+ *   发送侧按 max_freq 的固定倍率回放；接收侧没有 max_freq 时使用默认间隔。
+ *
+ * Side Effects:
+ *   None.
+ */
+std::chrono::duration<double> get_fault_replay_interval(int topic_index, bool is_send_topic)
+{
+  if (is_send_topic && sendTopics[topic_index].max_freq > 0)
+  {
+    return std::chrono::duration<double>(
+        1.0 / (static_cast<double>(sendTopics[topic_index].max_freq) *
+               FAULT_REPLAY_RATE_MULTIPLIER));
+  }
+
+  return std::chrono::duration<double>(DEFAULT_REPLAY_INTERVAL_SEC);
 }
 
 /**
@@ -286,8 +313,18 @@ void flush_fault_buffers()
 
   for (size_t topic_index = 0; topic_index < send_buffers_to_flush.size(); ++topic_index)
   {
+    const auto replay_interval =
+        get_fault_replay_interval(static_cast<int>(topic_index), true);
+    bool is_first_replay_message = true;
+
     for (auto &message : send_buffers_to_flush[topic_index])
     {
+      if (!is_first_replay_message)
+      {
+        std::this_thread::sleep_for(replay_interval);
+      }
+      is_first_replay_message = false;
+
       dispatch_send_message_after_fault(static_cast<int>(topic_index),
                                         std::move(message),
                                         false);
@@ -296,8 +333,18 @@ void flush_fault_buffers()
 
   for (size_t topic_index = 0; topic_index < recv_buffers_to_flush.size(); ++topic_index)
   {
+    const auto replay_interval =
+        get_fault_replay_interval(static_cast<int>(topic_index), false);
+    bool is_first_replay_message = true;
+
     for (auto &message : recv_buffers_to_flush[topic_index])
     {
+      if (!is_first_replay_message)
+      {
+        std::this_thread::sleep_for(replay_interval);
+      }
+      is_first_replay_message = false;
+
       publish_received_message_after_fault(static_cast<int>(topic_index), std::move(message));
     }
   }

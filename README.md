@@ -92,7 +92,7 @@ source devel/setup.bash
 
 - The optional `max_bitrate` in `send_topics` limits the serialized ROS payload sending bitrate in bits per second. Omit it or set it to `0` to disable bitrate limiting. A negative value is invalid. When the bitrate-limited queue grows too large, the bridge drops the oldest queued messages first to avoid sending stale robot-control data.
 
-- The optional `fault_policy` in both `send_topics` and `recv_topics` controls how messages are handled during a simulated node-level network fault. Supported values are `drop`, `buffer`, and `latest`; omitted values default to `drop`. During a node fault, send-side messages are held before ZMQ send, and receive-side messages are held before publishing to local ROS topics. When the fault recovers, cached messages re-enter the same normal send or receive path as newly arrived messages.
+- The optional `fault_policy` in both `send_topics` and `recv_topics` controls how messages are handled during a simulated node-level network fault. Supported values are `drop`, `buffer`, and `latest`; omitted values default to `drop`. During a node fault, send-side messages are held before ZMQ send, and receive-side messages are held before publishing to local ROS topics. When the fault recovers, cached send-side messages are replayed at 2x the topic `max_freq`, then re-enter the same normal send path as newly arrived messages.
 
 - For a fixed startup demo, set private params `node_fault_start_after` and `node_fault_duration`. For example, `node_fault_start_after: 5.0` and `node_fault_duration: 2.0` simulates a 2-second node-level network fault 5 seconds after the bridge starts.
 
