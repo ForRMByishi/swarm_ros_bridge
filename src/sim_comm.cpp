@@ -54,6 +54,7 @@ std::thread node_fault_thread;
 bool node_fault_thread_running = false;
 bool node_fault_active = false;
 bool node_fault_recovering = false;
+double node_fault_duration_sec = 0.0;
 std::chrono::steady_clock::time_point node_fault_until;
 SimCommPublishCallback recv_publish_callback = nullptr;
 std::vector<SimCommFaultPolicy> send_fault_policies;
@@ -140,6 +141,32 @@ std::chrono::duration<double> get_fault_replay_interval(int topic_index, bool is
     return std::chrono::duration<double>(
         1.0 / (static_cast<double>(sendTopics[topic_index].max_freq) *
                FAULT_REPLAY_RATE_MULTIPLIER));
+  }
+
+  return std::chrono::duration<double>(DEFAULT_REPLAY_INTERVAL_SEC);
+}
+
+/**
+ * 获取接收侧故障缓存恢复时的动态回放间隔。
+ *
+ * Parameters:
+ *   message_count: 当前接收话题缓存的消息条数。
+ *   fault_duration_sec: 本次模拟故障持续时间。
+ *
+ * Returns:
+ *   基于缓存条数和故障时长的回放间隔，目标是在半个故障时长内释放完缓存。
+ *
+ * Side Effects:
+ *   None.
+ */
+std::chrono::duration<double> get_recv_fault_replay_interval(size_t message_count,
+                                                             double fault_duration_sec)
+{
+  if (message_count > 1 && fault_duration_sec > 0.0)
+  {
+    return std::chrono::duration<double>(
+        fault_duration_sec / (static_cast<double>(message_count) *
+                              FAULT_REPLAY_RATE_MULTIPLIER));
   }
 
   return std::chrono::duration<double>(DEFAULT_REPLAY_INTERVAL_SEC);
@@ -302,6 +329,7 @@ void flush_fault_buffers()
 {
   std::vector<std::deque<SimCommMessage>> send_buffers_to_flush;
   std::vector<std::deque<SimCommMessage>> recv_buffers_to_flush;
+  double fault_duration_sec = 0.0;
 
   {
     std::lock_guard<std::mutex> lock(node_fault_mutex);
@@ -309,6 +337,7 @@ void flush_fault_buffers()
     recv_buffers_to_flush.swap(recv_fault_buffers);
     send_fault_buffers.resize(sendTopics.size());
     recv_fault_buffers.resize(recvTopics.size());
+    fault_duration_sec = node_fault_duration_sec;
   }
 
   for (size_t topic_index = 0; topic_index < send_buffers_to_flush.size(); ++topic_index)
@@ -334,7 +363,8 @@ void flush_fault_buffers()
   for (size_t topic_index = 0; topic_index < recv_buffers_to_flush.size(); ++topic_index)
   {
     const auto replay_interval =
-        get_fault_replay_interval(static_cast<int>(topic_index), false);
+        get_recv_fault_replay_interval(recv_buffers_to_flush[topic_index].size(),
+                                       fault_duration_sec);
     bool is_first_replay_message = true;
 
     for (auto &message : recv_buffers_to_flush[topic_index])
@@ -658,6 +688,7 @@ void start_node_fault(double duration_sec)
     }
 
     node_fault_active = true;
+    node_fault_duration_sec = duration_sec;
     node_fault_until =
         std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                                              std::chrono::duration<double>(duration_sec));
@@ -759,6 +790,7 @@ void stop_node_fault_control()
     node_fault_thread_running = false;
     node_fault_active = false;
     node_fault_recovering = false;
+    node_fault_duration_sec = 0.0;
   }
 
   node_fault_condition.notify_all();
