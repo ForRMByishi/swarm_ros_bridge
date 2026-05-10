@@ -22,6 +22,7 @@
  */
 
 #include "bridge_node.hpp"
+#include "control_server.hpp"
 #include "sim_comm.hpp"
 
 #include <cstring>
@@ -393,6 +394,23 @@ int main(int argc, char **argv)
     schedule_node_fault(node_fault_start_after, node_fault_duration);
   }
 
+  // ****************** launch remote fault-control server *****************
+  ControlServerConfig control_config;
+  nh.param("control_enabled", control_config.enabled, false);
+  nh.param("control_node_id", control_config.node_id, std::string(""));
+  nh.param("control_bind_ip", control_config.bind_ip, std::string("*"));
+  nh.param("control_bind_port", control_config.bind_port, 3999);
+  nh.param("control_token", control_config.token, std::string(""));
+  if (control_config.node_id.empty())
+  {
+    control_config.node_id = ros::this_node::getName();
+  }
+
+  if (!start_control_server(control_config))
+  {
+    return 4;
+  }
+
   // ****************** launch bitrate-control send threads ****************
   start_send_bitrate_threads();
 
@@ -407,6 +425,7 @@ int main(int argc, char **argv)
   ros::spin();
 
   // ***************** stop send/receive ******************************
+  stop_control_server();
   stop_node_fault_control();
 
   for (int32_t i=0; i < len_send; ++i){

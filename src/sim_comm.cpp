@@ -708,6 +708,12 @@ void start_node_fault(double duration_sec)
   ROS_WARN("[bridge node] Start simulated node fault for %.3f seconds.", duration_sec);
 }
 
+bool is_node_fault_busy()
+{
+  std::lock_guard<std::mutex> lock(node_fault_mutex);
+  return node_fault_active || node_fault_recovering;
+}
+
 void schedule_node_fault(double start_after_sec, double duration_sec)
 {
   if (start_after_sec <= 0.0)

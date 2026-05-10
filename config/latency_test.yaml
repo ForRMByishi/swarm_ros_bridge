@@ -9,6 +9,13 @@
 # node_fault_start_after: 5.0 # seconds after bridge startup
 # node_fault_duration: 2.0 # fault duration in seconds
 
+### optional remote control server for simulated node-level network fault
+# control_enabled: true # disabled by default to avoid port conflicts on one host
+# control_node_id: robot1 # optional logical node id used by trigger_fault.py --target
+# control_bind_ip: '*' # usually '*' for WiFi LAN tests
+# control_bind_port: 3999 # each bridge process on the same host needs a different port
+# control_token: test-lab-token # optional shared token; empty means no token check
+
 ### list all <IPname: IP> here (IPname can be set arbitrarily) ###
 IP:
   self: '*'   # '*' stands for all self IPs

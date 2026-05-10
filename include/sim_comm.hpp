@@ -134,6 +134,20 @@ void initialize_node_fault_control(SimCommPublishCallback recv_publish_callback)
 void start_node_fault(double duration_sec);
 
 /**
+ * 查询当前是否处于节点级模拟网络故障或恢复回放阶段。
+ *
+ * Parameters:
+ *   None.
+ *
+ * Returns:
+ *   true 表示当前故障控制模块正忙，新的故障触发应被拒绝。
+ *
+ * Side Effects:
+ *   None.
+ */
+bool is_node_fault_busy();
+
+/**
  * 安排一次延迟启动的节点级模拟网络故障。
  *
  * Parameters:

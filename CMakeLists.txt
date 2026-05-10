@@ -21,6 +21,7 @@ include_directories(
 
 add_executable(bridge_node
   src/bridge_node.cpp
+  src/control_server.cpp
   src/sim_comm.cpp
 )
 
@@ -39,6 +40,7 @@ install(TARGETS bridge_node
 install(PROGRAMS
 	scripts/listener.py
 	scripts/talker.py
+	scripts/trigger_fault.py
 	DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

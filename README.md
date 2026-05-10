@@ -96,6 +96,12 @@ source devel/setup.bash
 
 - For a fixed startup demo, set private params `node_fault_start_after` and `node_fault_duration`. For example, `node_fault_start_after: 5.0` and `node_fault_duration: 2.0` simulates a 2-second node-level network fault 5 seconds after the bridge starts.
 
+- For remote WiFi LAN tests, enable the optional control server with `control_enabled: true`, set `control_node_id`, `control_bind_ip`, `control_bind_port`, and optionally `control_token`, then trigger a fault from another machine:
+
+```bash
+rosrun swarm_ros_bridge trigger_fault.py --ip 192.168.1.101 --port 3999 --duration 2.0 --target robot1 --token test-lab-token
+```
+
 2. Launch the bridge_node:
 
 ```bash
