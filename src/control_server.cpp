@@ -36,8 +36,13 @@
 namespace
 {
 
+// 控制服务线程运行标志，stop_control_server() 通过它通知后台线程退出。
 std::atomic<bool> control_thread_running(false);
+
+// ZMQ REP 控制服务后台线程。
 std::thread control_thread;
+
+// 当前控制服务配置，在线程启动前写入，后台线程只读使用。
 ControlServerConfig active_config;
 
 /**
@@ -89,6 +94,7 @@ std::map<std::string, std::string> parse_key_value_request(const std::string &re
 
   while (std::getline(stream, segment, ';'))
   {
+    // 每个片段只按第一个 '=' 拆分，允许 value 中保留其它字符。
     const size_t separator_pos = segment.find('=');
     if (separator_pos == std::string::npos)
     {
@@ -156,6 +162,7 @@ bool parse_positive_duration(const std::map<std::string, std::string> &fields, d
 
   try
   {
+    // stod 允许部分解析，因此额外检查 parsed_chars，避免 "2abc" 被接受。
     size_t parsed_chars = 0;
     duration_sec = std::stod(iter->second, &parsed_chars);
     return parsed_chars == iter->second.size() && duration_sec > 0.0;
@@ -181,12 +188,15 @@ bool parse_positive_duration(const std::map<std::string, std::string> &fields, d
 std::string handle_control_request(const std::string &request_text)
 {
   const std::map<std::string, std::string> fields = parse_key_value_request(request_text);
+
+  // 当前控制面只暴露一个命令，避免无关请求误触发状态变化。
   const auto command_iter = fields.find("command");
   if (command_iter == fields.end() || command_iter->second != "start_node_fault")
   {
     return build_response(false, active_config.node_id, "error", "invalid_command");
   }
 
+  // target 是可选保护：发错 IP 时也能由节点逻辑 ID 再拦一次。
   const auto target_iter = fields.find("target");
   if (target_iter != fields.end() && !target_iter->second.empty() &&
       !active_config.node_id.empty() && target_iter->second != active_config.node_id)
@@ -194,6 +204,7 @@ std::string handle_control_request(const std::string &request_text)
     return build_response(false, active_config.node_id, "error", "target_mismatch");
   }
 
+  // token 为空表示实验环境不启用认证；非空时必须精确匹配。
   if (!active_config.token.empty())
   {
     const auto token_iter = fields.find("token");
@@ -209,6 +220,7 @@ std::string handle_control_request(const std::string &request_text)
     return build_response(false, active_config.node_id, "error", "invalid_duration_sec");
   }
 
+  // 不允许在故障窗口或恢复回放阶段重入触发，防止缓存语义混乱。
   if (is_node_fault_busy())
   {
     return build_response(false, active_config.node_id, "error", "node_fault_busy");
@@ -254,6 +266,8 @@ void control_thread_main(std::promise<bool> startup_result)
     while (control_thread_running.load())
     {
       zmqpp::message request;
+
+      // 使用非阻塞 receive，使 stop_control_server() 最多等待一个短轮询周期。
       if (!control_socket.receive(request, true))
       {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -293,6 +307,18 @@ void control_thread_main(std::promise<bool> startup_result)
 
 }  // namespace
 
+/**
+ * 启动 ZMQ 控制服务线程。
+ *
+ * Parameters:
+ *   config: 控制服务配置。
+ *
+ * Returns:
+ *   服务未启用或启动成功时返回 true；配置非法或 bind 失败时返回 false。
+ *
+ * Side Effects:
+ *   enabled 为 true 时创建后台线程并绑定 ZMQ REP socket。
+ */
 bool start_control_server(const ControlServerConfig &config)
 {
   if (!config.enabled)
@@ -315,6 +341,7 @@ bool start_control_server(const ControlServerConfig &config)
   active_config = config;
   control_thread_running.store(true);
 
+  // 等待后台线程完成 bind，避免端口冲突时主流程误以为控制服务已启动。
   std::promise<bool> startup_result;
   std::future<bool> startup_future = startup_result.get_future();
   control_thread = std::thread(control_thread_main, std::move(startup_result));
@@ -331,6 +358,18 @@ bool start_control_server(const ControlServerConfig &config)
   return true;
 }
 
+/**
+ * 停止 ZMQ 控制服务线程。
+ *
+ * Parameters:
+ *   None.
+ *
+ * Returns:
+ *   None.
+ *
+ * Side Effects:
+ *   通知后台控制线程退出并 join。
+ */
 void stop_control_server()
 {
   if (!control_thread_running.load())

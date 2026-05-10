@@ -47,22 +47,118 @@
 
 # define SUB_MAX 50 // max number of subscriber callbacks
 
+/**
+ * Type-specific ROS subscriber callback implemented by bridge_node.cpp.
+ *
+ * Parameters:
+ *   msg: ROS message received from the local subscribed topic.
+ *
+ * Returns:
+ *   None.
+ *
+ * Side Effects:
+ *   Defined by bridge_node.cpp; normally serializes and forwards the message.
+ */
 template <typename T, int i>
 void sub_cb(const T &msg);
 
+/**
+ * Compile-time table of subscriber callbacks for one ROS message type.
+ *
+ * Parameters:
+ *   T: ROS message class.
+ *
+ * Returns:
+ *   None.
+ *
+ * Side Effects:
+ *   None; the table maps topic indexes to template callback instances.
+ */
 template <typename T>
 void (*sub_callbacks[])(const T &);
 
+/**
+ * Creates a ROS subscriber for a concrete message type.
+ *
+ * Parameters:
+ *   topic_name: ROS topic name to subscribe.
+ *   nh: ROS node handle used to create the subscriber.
+ *   i: Topic index used to select the generated callback.
+ *
+ * Returns:
+ *   ROS subscriber bound to sub_callbacks<T>[i].
+ *
+ * Side Effects:
+ *   Registers a local ROS subscription.
+ */
 template <typename T>
 ros::Subscriber nh_sub(std::string topic_name, ros::NodeHandle nh, int i);
 
+/**
+ * Creates a ROS subscriber by matching a runtime message type string.
+ *
+ * Parameters:
+ *   topic_name: ROS topic name to subscribe.
+ *   msg_type: ROS message type string from YAML configuration.
+ *   nh: ROS node handle used to create the subscriber.
+ *   i: Topic index used to select the generated callback.
+ *
+ * Returns:
+ *   ROS subscriber for the matched message type.
+ *
+ * Side Effects:
+ *   Registers a local ROS subscription; exits on unsupported msg_type.
+ */
 ros::Subscriber topic_subscriber(std::string topic_name, std::string msg_type, ros::NodeHandle nh, int i);
 
+/**
+ * Creates a ROS publisher by matching a runtime message type string.
+ *
+ * Parameters:
+ *   topic_name: ROS topic name to advertise.
+ *   msg_type: ROS message type string from YAML configuration.
+ *   nh: ROS node handle used to create the publisher.
+ *
+ * Returns:
+ *   ROS publisher for the matched message type.
+ *
+ * Side Effects:
+ *   Advertises a local ROS topic; exits on unsupported msg_type.
+ */
 ros::Publisher topic_publisher(std::string topic_name, std::string msg_type, ros::NodeHandle nh);
 
+/**
+ * Type-specific deserializer and publisher implemented by bridge_node.cpp.
+ *
+ * Parameters:
+ *   buffer_ptr: Pointer to serialized ROS payload.
+ *   msg_size: Payload size in bytes.
+ *   i: Receive topic index.
+ *
+ * Returns:
+ *   None.
+ *
+ * Side Effects:
+ *   Defined by bridge_node.cpp; normally publishes to topic_pubs[i].
+ */
 template<typename T>
 void deserialize_pub(uint8_t* buffer_ptr, size_t msg_size, int i);
 
+/**
+ * Deserializes and publishes a payload by matching a runtime message type string.
+ *
+ * Parameters:
+ *   buffer_ptr: Pointer to serialized ROS payload.
+ *   msg_size: Payload size in bytes.
+ *   msg_type: ROS message type string from YAML configuration.
+ *   i: Receive topic index.
+ *
+ * Returns:
+ *   None.
+ *
+ * Side Effects:
+ *   Publishes locally through deserialize_pub<T>(); exits on unsupported msg_type.
+ */
 void deserialize_publish(uint8_t* buffer_ptr, size_t msg_size, std::string msg_type, int i);
 
 
@@ -81,12 +177,41 @@ void (*sub_callbacks[])(const T &)=
   sub_cb<T,45>, sub_cb<T,46>, sub_cb<T,47>, sub_cb<T,48>, sub_cb<T,49>
 };
 
+/**
+ * Creates a ROS subscriber for a concrete message type.
+ *
+ * Parameters:
+ *   topic_name: ROS topic name to subscribe.
+ *   nh: ROS node handle used to create the subscriber.
+ *   i: Topic index used to select the generated callback.
+ *
+ * Returns:
+ *   ROS subscriber bound to sub_callbacks<T>[i].
+ *
+ * Side Effects:
+ *   Registers a local ROS subscription with tcpNoDelay enabled.
+ */
 template <typename T>
 ros::Subscriber nh_sub(std::string topic_name, ros::NodeHandle nh, int i)
 {
   return nh.subscribe(topic_name, 10, sub_callbacks<T>[i], ros::TransportHints().tcpNoDelay());
 }
 
+/**
+ * Creates a ROS subscriber by matching a runtime message type string.
+ *
+ * Parameters:
+ *   topic_name: ROS topic name to subscribe.
+ *   msg_type: ROS message type string from YAML configuration.
+ *   nh: ROS node handle used to create the subscriber.
+ *   i: Topic index used to select the generated callback.
+ *
+ * Returns:
+ *   ROS subscriber for the matched message type.
+ *
+ * Side Effects:
+ *   Registers a local ROS subscription; logs fatal and exits on unsupported msg_type.
+ */
 ros::Subscriber topic_subscriber(std::string topic_name, std::string msg_type, ros::NodeHandle nh, int i)
 {
   #ifdef MSG_TYPE1
@@ -133,6 +258,20 @@ ros::Subscriber topic_subscriber(std::string topic_name, std::string msg_type, r
     exit(1);
 }
 
+/**
+ * Creates a ROS publisher by matching a runtime message type string.
+ *
+ * Parameters:
+ *   topic_name: ROS topic name to advertise.
+ *   msg_type: ROS message type string from YAML configuration.
+ *   nh: ROS node handle used to create the publisher.
+ *
+ * Returns:
+ *   ROS publisher for the matched message type.
+ *
+ * Side Effects:
+ *   Advertises a local ROS topic; logs fatal and exits on unsupported msg_type.
+ */
 ros::Publisher topic_publisher(std::string topic_name, std::string msg_type, ros::NodeHandle nh)
 {
   #ifdef MSG_TYPE1
@@ -179,6 +318,21 @@ ros::Publisher topic_publisher(std::string topic_name, std::string msg_type, ros
     exit(1);
 }
 
+/**
+ * Deserializes and publishes a payload by matching a runtime message type string.
+ *
+ * Parameters:
+ *   buffer_ptr: Pointer to serialized ROS payload.
+ *   msg_size: Payload size in bytes.
+ *   msg_type: ROS message type string from YAML configuration.
+ *   i: Receive topic index.
+ *
+ * Returns:
+ *   None.
+ *
+ * Side Effects:
+ *   Publishes locally through deserialize_pub<T>(); logs fatal and exits on unsupported msg_type.
+ */
 void deserialize_publish(uint8_t* buffer_ptr, size_t msg_size, std::string msg_type, int i)
 {
   #ifdef MSG_TYPE1

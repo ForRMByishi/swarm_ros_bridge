@@ -3,17 +3,17 @@
 File: trigger_fault.py
 
 Purpose:
-    Sends a remote control request to one swarm_ros_bridge node and triggers a
-    simulated node-level network fault for a configured duration.
+    向一个 swarm_ros_bridge 节点发送远程控制请求，触发指定时长的
+    simulated node-level network fault。
 
 Responsibilities:
-    - Build the lightweight key-value control request used by control_server.cpp.
-    - Connect to the target node's ZMQ REP control endpoint.
-    - Print the bridge response for lab scripts and manual tests.
+    - 构造 control_server.cpp 使用的轻量 key-value 控制请求。
+    - 连接目标节点的 ZMQ REP 控制端口。
+    - 打印 bridge 响应，便于实验脚本和手动测试使用。
 
 Notes:
-    The target bridge must enable control_enabled and expose control_bind_port
-    in its private ROS/YAML parameters.
+    目标 bridge 必须在私有 ROS/YAML 参数中启用 control_enabled，并开放
+    control_bind_port。
 """
 
 import argparse
@@ -21,24 +21,25 @@ import sys
 
 try:
     import zmq
-except ImportError:  # pragma: no cover - depends on the user's ROS/Python env.
+except ImportError:  # pragma: no cover - 取决于用户 ROS/Python 环境。
+    # pyzmq 是运行时依赖，缺失时在 send_request() 中给出明确错误。
     zmq = None
 
 
 def build_request(duration_sec: float, token: str, target: str) -> str:
     """
-    Builds the key-value request string expected by the C++ control server.
+    构造 C++ control server 期望的 key-value 请求字符串。
 
     Parameters:
         duration_sec:
-            Fault duration in seconds. It must be positive.
+            故障持续时间，单位秒，必须为正数。
         token:
-            Optional shared control token. Empty string means no token field is sent.
+            可选共享控制 token。空字符串表示不发送 token 字段。
         target:
-            Optional node id filter. Empty string means the receiving endpoint decides.
+            可选节点 ID 过滤字段。空字符串表示由接收端 IP/端口决定目标。
 
     Returns:
-        Semicolon-separated key-value request text.
+        分号分隔的 key-value 请求文本。
 
     Side Effects:
         None.
@@ -56,27 +57,27 @@ def build_request(duration_sec: float, token: str, target: str) -> str:
 
 def send_request(ip: str, port: int, request_text: str, timeout_ms: int) -> str:
     """
-    Sends one control request to a bridge node and waits for its response.
+    向一个 bridge 节点发送控制请求并等待响应。
 
     Parameters:
         ip:
-            Target node IP address or hostname.
+            目标节点 IP 地址或 hostname。
         port:
-            Target control port.
+            目标控制端口。
         request_text:
-            Key-value request string.
+            key-value 请求字符串。
         timeout_ms:
-            Send/receive timeout in milliseconds.
+            发送/接收超时时间，单位毫秒。
 
     Returns:
-        Response text returned by the bridge node.
+        bridge 节点返回的响应文本。
 
     Raises:
         RuntimeError:
-            If pyzmq is unavailable or the request times out.
+            pyzmq 不可用或请求超时时抛出。
 
     Side Effects:
-        Opens a short-lived ZMQ REQ socket.
+        打开一个短生命周期的 ZMQ REQ socket。
     """
     if zmq is None:
         raise RuntimeError("pyzmq is not installed in this Python environment")
@@ -89,6 +90,7 @@ def send_request(ip: str, port: int, request_text: str, timeout_ms: int) -> str:
 
     endpoint = f"tcp://{ip}:{port}"
     try:
+        # REQ/REP 一次请求只发送一个字符串，便于人工抓包和脚本解析。
         socket.connect(endpoint)
         socket.send_string(request_text)
         return socket.recv_string()
@@ -101,16 +103,16 @@ def send_request(ip: str, port: int, request_text: str, timeout_ms: int) -> str:
 
 def parse_args() -> argparse.Namespace:
     """
-    Parses command-line arguments for the remote fault trigger tool.
+    解析远程故障触发工具的命令行参数。
 
     Parameters:
         None.
 
     Returns:
-        Parsed argparse namespace.
+        argparse 解析后的 namespace。
 
     Side Effects:
-        Reads sys.argv and may print argparse validation errors.
+        读取 sys.argv，并可能打印 argparse 校验错误。
     """
     parser = argparse.ArgumentParser(
         description="Trigger a simulated node-level network fault on one swarm_ros_bridge node."
@@ -126,17 +128,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     """
-    CLI entry point.
+    CLI 入口函数。
 
     Parameters:
         None.
 
     Returns:
-        Process exit code. 0 means a response was received; non-zero means local validation
-        or communication failed.
+        进程退出码。0 表示收到响应；非 0 表示本地校验或通信失败。
 
     Side Effects:
-        Sends one network control request and prints the response.
+        发送一次网络控制请求并打印响应。
     """
     args = parse_args()
     if args.duration <= 0.0:

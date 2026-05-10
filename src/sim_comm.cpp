@@ -36,37 +36,87 @@
 
 namespace
 {
+// max_bitrate 排队窗口，按 max_bitrate * window 推导合理的排队字节上限。
 const double BITRATE_QUEUE_WINDOW_SEC = 0.2;
+
+// 缺少话题速率信息时使用的默认 replay 间隔，单位 second。
 const double DEFAULT_REPLAY_INTERVAL_SEC = 0.01;
+
+// 发端故障缓存恢复时的加速倍率，当前固定为原话题 max_freq 的 2 倍。
 const double FAULT_REPLAY_RATE_MULTIPLIER = 2.0;
+
+// max_bitrate 队列的消息数量硬上限，防止小消息长期堆积。
 const size_t MAX_BITRATE_QUEUE_MESSAGES = 30;
 
+// 每个发送话题的限速线程运行标志；未限速话题也保留占位以保持索引对齐。
 std::vector<std::unique_ptr<std::atomic<bool>>> send_thread_flags;
+
+// 每个发送话题的 token bucket 后台发送线程。
 std::vector<std::thread> send_threads;
+
+// 每个发送话题的限速等待队列，索引与 sendTopics 对齐。
 std::vector<std::unique_ptr<std::deque<SimCommMessage>>> send_queues;
+
+// 每个发送队列对应的 mutex，保护队列和字节计数。
 std::vector<std::unique_ptr<std::mutex>> send_queue_mutexes;
+
+// 每个发送队列对应的 condition_variable，用于唤醒限速线程。
 std::vector<std::unique_ptr<std::condition_variable>> send_queue_conditions;
+
+// 每个限速队列当前积压的 payload 字节数。
 std::vector<size_t> send_queue_bytes;
 
+// 节点级模拟故障状态 mutex，保护 active/recovering 状态和故障缓存。
 std::mutex node_fault_mutex;
+
+// 节点级故障状态 condition_variable，用于通知故障开始、结束和恢复完成。
 std::condition_variable node_fault_condition;
+
+// 节点级故障监控线程，负责在故障到期后触发缓存恢复。
 std::thread node_fault_thread;
+
+// 故障监控线程运行标志。
 bool node_fault_thread_running = false;
+
+// 当前是否处于模拟节点断链窗口。
 bool node_fault_active = false;
+
+// 当前是否处于故障结束后的缓存恢复回放阶段。
 bool node_fault_recovering = false;
+
+// 最近一次节点故障持续时间，供接收侧计算恢复回放速率。
 double node_fault_duration_sec = 0.0;
+
+// 当前故障窗口结束的 steady_clock 时间点。
 std::chrono::steady_clock::time_point node_fault_until;
+
+// 接收侧缓存恢复时用于提交本地 ROS publish 的回调。
 SimCommPublishCallback recv_publish_callback = nullptr;
+
+// 每个发送话题的故障处理策略，索引与 sendTopics 对齐。
 std::vector<SimCommFaultPolicy> send_fault_policies;
+
+// 每个接收话题的故障处理策略，索引与 recvTopics 对齐。
 std::vector<SimCommFaultPolicy> recv_fault_policies;
+
+// 发送侧故障缓存，保存故障窗口内本应发往 ZMQ 的消息。
 std::vector<std::deque<SimCommMessage>> send_fault_buffers;
+
+// 接收侧故障缓存，保存故障窗口内暂不提交给本机 ROS 上层的消息。
 std::vector<std::deque<SimCommMessage>> recv_fault_buffers;
 
+// 将一条消息放入指定发送话题的 max_bitrate 限速队列。
 void enqueue_send_message(int topic_index, SimCommMessage message);
+
+// 如果故障已经到期但监控线程尚未处理，则在当前线程内触发恢复。
 void flush_expired_fault_if_needed();
+
+// 按 drop/buffer/latest 策略更新指定故障缓存。
 void apply_fault_policy_to_buffer(SimCommFaultPolicy policy,
                                   SimCommMessage message,
                                   std::deque<SimCommMessage> &buffer);
+
+// 故障窗口内消费发送侧消息；返回 true 表示消息已被故障策略处理。
 bool consume_send_message_if_fault_active(int topic_index, SimCommMessage &message);
 
 /**
@@ -213,12 +263,14 @@ void dispatch_send_message_after_fault(int topic_index,
                                        SimCommMessage message,
                                        bool should_check_fault_before_zmq)
 {
+  // 启用 max_bitrate 的话题继续进入 token bucket 队列，保持带宽控制语义。
   if (sendTopics[topic_index].max_bitrate > 0.0)
   {
     enqueue_send_message(topic_index, std::move(message));
     return;
   }
 
+  // 故障缓存回放时跳过再次故障检查，避免恢复阶段把缓存重新放回故障缓存。
   if (!should_check_fault_before_zmq || !consume_send_message_if_fault_active(topic_index, message))
   {
     send_serialized_message(topic_index, message);
@@ -267,6 +319,8 @@ bool consume_send_message_if_fault_active(int topic_index, SimCommMessage &messa
   flush_expired_fault_if_needed();
 
   std::unique_lock<std::mutex> lock(node_fault_mutex);
+
+  // 恢复回放期间暂停新消息进入 ZMQ，保证“先缓存、后新消息”的发端顺序。
   node_fault_condition.wait(lock, [] {
     return !node_fault_recovering;
   });
@@ -307,6 +361,7 @@ void apply_fault_policy_to_buffer(SimCommFaultPolicy policy,
 
   if (policy == SimCommFaultPolicy::LATEST)
   {
+    // latest 策略只保留最近到达的一条，避免恢复时提交过期状态。
     buffer.clear();
   }
 
@@ -333,6 +388,8 @@ void flush_fault_buffers()
 
   {
     std::lock_guard<std::mutex> lock(node_fault_mutex);
+
+    // 先交换出待恢复缓存，缩短持锁时间，避免阻塞实时收发线程。
     send_buffers_to_flush.swap(send_fault_buffers);
     recv_buffers_to_flush.swap(recv_fault_buffers);
     send_fault_buffers.resize(sendTopics.size());
@@ -342,6 +399,7 @@ void flush_fault_buffers()
 
   for (size_t topic_index = 0; topic_index < send_buffers_to_flush.size(); ++topic_index)
   {
+    // 发端缓存按 max_freq 的固定倍率加速回放，尽快追上当前发布节奏。
     const auto replay_interval =
         get_fault_replay_interval(static_cast<int>(topic_index), true);
     bool is_first_replay_message = true;
@@ -362,6 +420,7 @@ void flush_fault_buffers()
 
   for (size_t topic_index = 0; topic_index < recv_buffers_to_flush.size(); ++topic_index)
   {
+    // 收端缓存按缓存量和故障时长计算间隔，目标是在约半个故障时长内清空。
     const auto replay_interval =
         get_recv_fault_replay_interval(recv_buffers_to_flush[topic_index].size(),
                                        fault_duration_sec);
@@ -519,6 +578,7 @@ void enqueue_send_message(int topic_index, SimCommMessage message)
  */
 void send_func(int topic_index)
 {
+  // max_bitrate 以 bit/s 配置，token bucket 内部按 byte/s 消耗。
   const double bytes_per_second = sendTopics[topic_index].max_bitrate / 8.0;
   const double base_bucket_capacity =
       std::max(1.0, bytes_per_second * BITRATE_QUEUE_WINDOW_SEC);
@@ -553,6 +613,7 @@ void send_func(int topic_index)
 
       if (available_tokens >= static_cast<double>(front_data_len))
       {
+        // token 足够时取出队首消息，保持同一话题内的发送顺序。
         available_tokens -= static_cast<double>(front_data_len);
         message = std::move(send_queues[topic_index]->front());
         send_queues[topic_index]->pop_front();
@@ -567,6 +628,8 @@ void send_func(int topic_index)
     }
 
     lock.unlock();
+
+    // 限速等待期间可能进入故障窗口，因此真正发送前还要再检查一次。
     if (!consume_send_message_if_fault_active(topic_index, message))
     {
       send_serialized_message(topic_index, message);
@@ -575,6 +638,20 @@ void send_func(int topic_index)
 }
 } // namespace
 
+/**
+ * 从单个话题配置中读取可选数值字段。
+ *
+ * Parameters:
+ *   topic_xml: 话题级 XmlRpc 配置对象。
+ *   field_name: 要读取的可选字段名。
+ *   default_value: 字段不存在时返回的默认值。
+ *
+ * Returns:
+ *   配置中的数值；字段不存在时返回 default_value。
+ *
+ * Side Effects:
+ *   字段存在但不是数值类型时记录 ROS fatal 日志并退出。
+ */
 double get_optional_numeric_param(XmlRpc::XmlRpcValue topic_xml,
                                   const std::string &field_name,
                                   double default_value)
@@ -584,6 +661,7 @@ double get_optional_numeric_param(XmlRpc::XmlRpcValue topic_xml,
     return default_value;
   }
 
+  // XmlRpc 会区分 int 和 double，这里统一转换为 double 返回给调用方。
   XmlRpc::XmlRpcValue field_value = topic_xml[field_name];
   if (field_value.getType() == XmlRpc::XmlRpcValue::TypeInt)
   {
@@ -598,6 +676,20 @@ double get_optional_numeric_param(XmlRpc::XmlRpcValue topic_xml,
   exit(1);
 }
 
+/**
+ * 从单个话题配置中读取可选字符串字段。
+ *
+ * Parameters:
+ *   topic_xml: 话题级 XmlRpc 配置对象。
+ *   field_name: 要读取的可选字段名。
+ *   default_value: 字段不存在时返回的默认值。
+ *
+ * Returns:
+ *   配置中的字符串；字段不存在时返回 default_value。
+ *
+ * Side Effects:
+ *   字段存在但不是字符串类型时记录 ROS fatal 日志并退出。
+ */
 std::string get_optional_string_param(XmlRpc::XmlRpcValue topic_xml,
                                       const std::string &field_name,
                                       const std::string &default_value)
@@ -617,8 +709,21 @@ std::string get_optional_string_param(XmlRpc::XmlRpcValue topic_xml,
   exit(1);
 }
 
+/**
+ * 初始化每个发送话题的限速队列和同步对象。
+ *
+ * Parameters:
+ *   topic_count: 发送话题数量。
+ *
+ * Returns:
+ *   None.
+ *
+ * Side Effects:
+ *   重置本模块内部的队列、线程和停止标志容器。
+ */
 void initialize_send_bitrate_control(int topic_count)
 {
+  // 初始化时先清理旧状态，支持测试中重复构造 bridge 进程逻辑。
   send_thread_flags.clear();
   send_threads.clear();
   send_queues.clear();
@@ -637,10 +742,23 @@ void initialize_send_bitrate_control(int topic_count)
   }
 }
 
+/**
+ * 为 max_bitrate 为正值的话题启动 token bucket 发送线程。
+ *
+ * Parameters:
+ *   None.
+ *
+ * Returns:
+ *   None.
+ *
+ * Side Effects:
+ *   为需要限速的话题创建后台发送线程。
+ */
 void start_send_bitrate_threads()
 {
   for (size_t i = 0; i < sendTopics.size(); ++i)
   {
+    // max_bitrate <= 0 表示不限速，继续走原始立即发送路径。
     if (sendTopics[i].max_bitrate > 0.0)
     {
       send_threads[i] = std::thread(&send_func, static_cast<int>(i));
@@ -648,6 +766,18 @@ void start_send_bitrate_threads()
   }
 }
 
+/**
+ * 初始化节点故障模拟控制。
+ *
+ * Parameters:
+ *   publish_callback: 接收侧缓存恢复时调用的发布函数。
+ *
+ * Returns:
+ *   None.
+ *
+ * Side Effects:
+ *   解析每个 send/recv 话题的 fault_policy，并启动恢复检查线程。
+ */
 void initialize_node_fault_control(SimCommPublishCallback publish_callback)
 {
   recv_publish_callback = publish_callback;
@@ -658,6 +788,7 @@ void initialize_node_fault_control(SimCommPublishCallback publish_callback)
 
   for (const auto &topic : sendTopics)
   {
+    // 将 YAML 字符串策略提前解析为 enum，避免运行期反复解析字符串。
     send_fault_policies.emplace_back(parse_fault_policy(topic.fault_policy, topic.name));
     send_fault_buffers.emplace_back();
   }
@@ -672,6 +803,18 @@ void initialize_node_fault_control(SimCommPublishCallback publish_callback)
   node_fault_thread = std::thread(&node_fault_monitor_func);
 }
 
+/**
+ * 启动一次节点级模拟网络故障。
+ *
+ * Parameters:
+ *   duration_sec: 故障持续时间，单位秒。
+ *
+ * Returns:
+ *   None.
+ *
+ * Side Effects:
+ *   在故障窗口内，发送侧和接收侧按各自话题的 fault_policy 处理消息。
+ */
 void start_node_fault(double duration_sec)
 {
   if (duration_sec <= 0.0)
@@ -689,6 +832,8 @@ void start_node_fault(double duration_sec)
 
     node_fault_active = true;
     node_fault_duration_sec = duration_sec;
+
+    // 使用 steady_clock 计算故障窗口，避免 ROS time 回拨或仿真暂停影响恢复。
     node_fault_until =
         std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                                              std::chrono::duration<double>(duration_sec));
@@ -708,12 +853,37 @@ void start_node_fault(double duration_sec)
   ROS_WARN("[bridge node] Start simulated node fault for %.3f seconds.", duration_sec);
 }
 
+/**
+ * 查询当前是否处于节点级模拟网络故障或恢复回放阶段。
+ *
+ * Parameters:
+ *   None.
+ *
+ * Returns:
+ *   true 表示当前故障控制模块正忙，新的故障触发应被拒绝。
+ *
+ * Side Effects:
+ *   None.
+ */
 bool is_node_fault_busy()
 {
   std::lock_guard<std::mutex> lock(node_fault_mutex);
   return node_fault_active || node_fault_recovering;
 }
 
+/**
+ * 安排一次延迟启动的节点级模拟网络故障。
+ *
+ * Parameters:
+ *   start_after_sec: 从当前时刻起等待多久后启动故障，单位秒。
+ *   duration_sec: 故障持续时间，单位秒。
+ *
+ * Returns:
+ *   None.
+ *
+ * Side Effects:
+ *   创建一个轻量后台线程，到时调用 start_node_fault()。
+ */
 void schedule_node_fault(double start_after_sec, double duration_sec)
 {
   if (start_after_sec <= 0.0)
@@ -722,18 +892,34 @@ void schedule_node_fault(double start_after_sec, double duration_sec)
     return;
   }
 
+  // 固定启动演示功能只用于测试，因此用 detached 轻量线程即可。
   std::thread([start_after_sec, duration_sec] {
     std::this_thread::sleep_for(std::chrono::duration<double>(start_after_sec));
     start_node_fault(duration_sec);
   }).detach();
 }
 
+/**
+ * 按话题限速配置发送或排队一条序列化消息。
+ *
+ * Parameters:
+ *   topic_index: sendTopics 中的发送话题索引。
+ *   message: 序列化后的 ROS payload 及其字节长度。
+ *
+ * Returns:
+ *   None.
+ *
+ * Side Effects:
+ *   未启用 max_bitrate 时立即发送；启用后将消息放入限速队列。
+ */
 void dispatch_send_message(int topic_index, SimCommMessage message)
 {
   flush_expired_fault_if_needed();
 
   {
     std::unique_lock<std::mutex> lock(node_fault_mutex);
+
+    // 恢复回放期间等待，保证缓存消息先于新到达消息释放。
     node_fault_condition.wait(lock, [] {
       return !node_fault_recovering;
     });
@@ -749,12 +935,27 @@ void dispatch_send_message(int topic_index, SimCommMessage message)
   dispatch_send_message_after_fault(topic_index, std::move(message), true);
 }
 
+/**
+ * 按接收侧故障策略处理一条刚到达的序列化消息。
+ *
+ * Parameters:
+ *   topic_index: recvTopics 中的接收话题索引。
+ *   message: 刚从 ZMQ 收到的序列化 ROS payload。
+ *
+ * Returns:
+ *   None.
+ *
+ * Side Effects:
+ *   正常状态下立即提交给上层；故障窗口内按 drop/buffer/latest 处理。
+ */
 void dispatch_received_message(int topic_index, SimCommMessage message)
 {
   flush_expired_fault_if_needed();
 
   {
     std::unique_lock<std::mutex> lock(node_fault_mutex);
+
+    // 收端恢复期间也暂停新消息提交，避免新消息插到缓存回放之前。
     node_fault_condition.wait(lock, [] {
       return !node_fault_recovering;
     });
@@ -770,6 +971,18 @@ void dispatch_received_message(int topic_index, SimCommMessage message)
   publish_received_message_after_fault(topic_index, std::move(message));
 }
 
+/**
+ * 停止指定发送话题的限速工作线程。
+ *
+ * Parameters:
+ *   topic_index: sendTopics 中的发送话题索引。
+ *
+ * Returns:
+ *   None.
+ *
+ * Side Effects:
+ *   启用限速时唤醒并 join 该话题的发送线程。
+ */
 void stop_send_bitrate_control(int topic_index)
 {
   if (sendTopics[topic_index].max_bitrate <= 0.0)
@@ -779,6 +992,8 @@ void stop_send_bitrate_control(int topic_index)
 
   {
     std::lock_guard<std::mutex> lock(*send_queue_mutexes[topic_index]);
+
+    // 修改运行标志后通知线程，使其能从 condition_variable 等待中退出。
     send_thread_flags[topic_index]->store(false);
   }
 
@@ -789,10 +1004,24 @@ void stop_send_bitrate_control(int topic_index)
   }
 }
 
+/**
+ * 停止节点故障模拟控制线程。
+ *
+ * Parameters:
+ *   None.
+ *
+ * Returns:
+ *   None.
+ *
+ * Side Effects:
+ *   唤醒并 join 故障恢复检查线程。
+ */
 void stop_node_fault_control()
 {
   {
     std::lock_guard<std::mutex> lock(node_fault_mutex);
+
+    // 关闭时清空故障状态，避免等待中的收发线程继续阻塞。
     node_fault_thread_running = false;
     node_fault_active = false;
     node_fault_recovering = false;

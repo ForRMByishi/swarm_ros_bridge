@@ -23,10 +23,19 @@
 
 struct ControlServerConfig
 {
+  // 是否启用远程控制服务；默认关闭，避免单机多节点端口冲突。
   bool enabled = false;
+
+  // 当前 bridge 节点的逻辑 ID，用于匹配远程请求中的 target 字段。
   std::string node_id;
+
+  // 控制服务绑定的 IP 地址；"*" 表示监听全部网卡。
   std::string bind_ip = "*";
+
+  // 控制服务绑定的 TCP 端口。
   int bind_port = 3999;
+
+  // 可选共享 token；为空时不进行 token 校验。
   std::string token;
 };
 

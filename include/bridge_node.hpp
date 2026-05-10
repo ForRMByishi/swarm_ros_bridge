@@ -31,12 +31,62 @@ zmqpp reference link:
 */
 #include "bridge_state.hpp"
 #include "ros_sub_pub.hpp"
+
+/**
+ * Checks whether a send-topic message would exceed the configured max_freq.
+ *
+ * Parameters:
+ *   i: Index into sendTopics and frequency-control state vectors.
+ *
+ * Returns:
+ *   true if the caller should discard this message; false if it may be forwarded.
+ *
+ * Side Effects:
+ *   Updates frequency-control counters for the topic.
+ */
 bool send_freq_control(int i);
 
+/**
+ * Runs the receive loop for one configured ZMQ SUB socket.
+ *
+ * Parameters:
+ *   i: Index into recvTopics and receive-thread state vectors.
+ *
+ * Returns:
+ *   None.
+ *
+ * Side Effects:
+ *   Receives remote payloads and submits them to the local ROS publishing path.
+ */
 void recv_func(int i);
 
 // ***************** stop send/receive ******************************
+/**
+ * Stops one configured send path.
+ *
+ * Parameters:
+ *   i: Index into sendTopics, topic_subs, and senders.
+ *
+ * Returns:
+ *   None.
+ *
+ * Side Effects:
+ *   Shuts down local subscription, bitrate-control thread, and ZMQ PUB socket.
+ */
 void stop_send(int i);
+
+/**
+ * Stops one configured receive path.
+ *
+ * Parameters:
+ *   i: Index into recvTopics, receivers, and topic_pubs.
+ *
+ * Returns:
+ *   None.
+ *
+ * Side Effects:
+ *   Requests receive-loop exit, closes ZMQ SUB socket, and unadvertises ROS publisher.
+ */
 void stop_recv(int i);
 
 #endif

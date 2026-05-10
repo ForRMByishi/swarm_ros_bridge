@@ -28,17 +28,26 @@
 
 enum class SimCommFaultPolicy
 {
+  // 故障窗口内直接丢弃消息。
   DROP,
+
+  // 故障窗口内按到达顺序缓存消息，恢复后回放。
   BUFFER,
+
+  // 故障窗口内只保留最新一条消息。
   LATEST
 };
 
 struct SimCommMessage
 {
+  // 序列化后的 ROS payload 长度，单位 byte。
   size_t data_len;
+
+  // 序列化后的 ROS payload 内容。
   std::vector<uint8_t> data;
 };
 
+// 接收侧缓存恢复时调用的发布回调，参数为 payload 指针、payload 长度和 recvTopics 索引。
 using SimCommPublishCallback = void (*)(uint8_t *buffer_ptr, size_t msg_size, int topic_index);
 
 /**
