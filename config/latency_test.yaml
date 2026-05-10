@@ -5,6 +5,10 @@
 # (modify/add in ros_sub_pub.hpp if you need more)
 ### max number of send_topics supported: 50
 
+### optional fixed startup demo of simulated node-level network fault
+# node_fault_start_after: 5.0 # seconds after bridge startup
+# node_fault_duration: 2.0 # fault duration in seconds
+
 ### list all <IPname: IP> here (IPname can be set arbitrarily) ###
 IP:
   self: '*'   # '*' stands for all self IPs
@@ -17,6 +21,7 @@ send_topics:
   msg_type: std_msgs/String # ROS message type (rosmsg style)
   max_freq: 1000 # max sending frequency (Hz) int
   # max_bitrate: 0 # optional max sending bitrate (bps). Omitted or 0 means unlimited.
+  # fault_policy: buffer # optional simulated node-fault policy: drop, buffer, or latest.
   srcIP: self # self IP
   srcPort: 3001 # ports of send_topics should be different
 
@@ -25,5 +30,6 @@ send_topics:
 recv_topics:
 - topic_name: chatter_recv # the received messages will be published in this topic
   msg_type: std_msgs/String # ROS message type (rosmsg style)
+  # fault_policy: buffer # optional simulated node-fault policy: drop, buffer, or latest.
   srcIP: neighbor # message source IPname
   srcPort: 3001 # message source port

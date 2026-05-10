@@ -32,6 +32,7 @@ struct TopicInfo
   std::string type;
   int max_freq;
   double max_bitrate;
+  std::string fault_policy;
   std::string ip;
   int port;
 };

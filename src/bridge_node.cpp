@@ -5,25 +5,26 @@
  * It will send/receive the specified ROS topics in ../config/ros_topics.yaml
  * It uses zmq socket(PUB/SUB mode), which reconnects others autonomously and
  * supports 1-N pub-sub connection even with TCP protocol.
- * 
+ *
  * Note: This program relies on ZMQPP (c++ wrapper around ZeroMQ).
  *  sudo apt install libzmqpp-dev
- * 
+ *
  * Core Idea: It would create the receving thread for each receiving ROS topic
  *  and send ROS messages in each sub_cb() callback.
- * 
+ *
  * @version 1.0
  * @date 2023-01-01
- * 
+ *
  * @license BSD 3-Clause License
  * @copyright (c) 2023, Peixuan Shu
  * All rights reserved.
- * 
+ *
  */
 
 #include "bridge_node.hpp"
 #include "sim_comm.hpp"
 
+#include <cstring>
 #include <utility>
 
 std::string ns; // namespace of this node
@@ -56,14 +57,14 @@ std::vector<std::thread> recv_threads;
 // // this is the original freq control func that has been deprecated
 // bool send_freq_control(int i)
 // {
-//   ros::Time t_now = ros::Time::now(); 
+//   ros::Time t_now = ros::Time::now();
 //   bool discard_flag;
 //   if ((t_now - sub_t_last[i]).toSec() * sendTopics[i].max_freq < 1.0) {
 //     discard_flag = true;
 //   }
 //   else {
 //     discard_flag = false;
-//     sub_t_last[i] = t_now; 
+//     sub_t_last[i] = t_now;
 //   }
 //   return discard_flag; // flag of discarding this message
 // }
@@ -72,7 +73,7 @@ std::vector<std::thread> recv_threads;
 bool send_freq_control(int i)
 {
   bool discard_flag;
-  ros::Time t_now = ros::Time::now(); 
+  ros::Time t_now = ros::Time::now();
   // check whether the send of this message will exceed the freq limit in the last period
   if ((send_num[i] + 1) / (t_now - sub_t_last[i]).toSec() > sendTopics[i].max_freq) {
     discard_flag = true;
@@ -102,7 +103,7 @@ void sub_cb(const T &msg)
   /* serialize the sending message and hand it to the communication-control module */
   namespace ser = ros::serialization;
   size_t data_len = ser::serializationLength(msg); // bytes length of msg
-  SimCommSendMessage send_message;
+  SimCommMessage send_message;
   send_message.data_len = data_len;
   send_message.data.resize(data_len);
   ser::OStream stream(send_message.data.data(), data_len);
@@ -129,6 +130,11 @@ void deserialize_pub(uint8_t* buffer_ptr, size_t msg_size, int i)
   topic_pubs[i].publish(msg);
 }
 
+/* submit one received serialized message through the normal ROS publish path */
+void publish_received_message(uint8_t* buffer_ptr, size_t msg_size, int i)
+{
+  deserialize_publish(buffer_ptr, msg_size, recvTopics[i].type, i);
+}
 
 /* receive thread function to receive messages and publish them */
 void recv_func(int i)
@@ -147,16 +153,19 @@ void recv_func(int i)
       size_t data_len;
       recv_array >> data_len; // unpack meta data
       /*  equal to:
-        recv_array.get(&data_len, recv_array.read_cursor++); 
+        recv_array.get(&data_len, recv_array.read_cursor++);
         void get(T &value, size_t const cursor){
-          uint8_t const* byte = static_cast<uint8_t const*>(raw_data(cursor)); 
-          b = *byte;} 
+          uint8_t const* byte = static_cast<uint8_t const*>(raw_data(cursor));
+          b = *byte;}
       */
-      // a dynamic length array by unique_ptr
-      std::unique_ptr<uint8_t> recv_buffer(new uint8_t[data_len]);  
+      SimCommMessage recv_message;
+      recv_message.data_len = data_len;
+      recv_message.data.resize(data_len);
       // continue to copy the raw_data of recv_array into buffer
-      memcpy(recv_buffer.get(), static_cast<const uint8_t *>(recv_array.raw_data(recv_array.read_cursor())), data_len);
-      deserialize_publish(recv_buffer.get(), data_len, recvTopics[i].type, i);
+      memcpy(recv_message.data.data(),
+             static_cast<const uint8_t *>(recv_array.raw_data(recv_array.read_cursor())),
+             data_len);
+      dispatch_received_message(i, std::move(recv_message));
 
       // std::cout << data_len << std::endl;
       // std::cout << recv_buffer.get() << std::endl;
@@ -175,7 +184,7 @@ void recv_func(int i)
           else {topicName = ns + "/" + topicName;}
         }  // print namespace prefix if topic name is not global
         ROS_INFO("[bridge node] \"%s\" received!", topicName.c_str());
-      } // false -> true(first message in)        
+      } // false -> true(first message in)
       recv_flags_last[i] = recv_flag;
     }
   }
@@ -257,7 +266,7 @@ int main(int argc, char **argv)
   }
 
   std::cout << "--------send topics--------" << std::endl;
-  std::set<int> srcPorts; // for duplicate check 
+  std::set<int> srcPorts; // for duplicate check
   for (int32_t i=0; i < len_send; ++i)
   {
     ROS_ASSERT(send_topics_xml[i].getType() == XmlRpc::XmlRpcValue::TypeStruct);
@@ -266,6 +275,7 @@ int main(int argc, char **argv)
     std::string msg_type = send_topic_xml["msg_type"];
     int max_freq = send_topic_xml["max_freq"];
     double max_bitrate = get_optional_numeric_param(send_topic_xml, "max_bitrate", 0.0);
+    std::string fault_policy = get_optional_string_param(send_topic_xml, "fault_policy", "drop");
     if (max_bitrate < 0.0)
     {
       ROS_FATAL("[bridge_node] max_bitrate of send topic \"%s\" must be greater than or equal to 0!",
@@ -279,6 +289,7 @@ int main(int argc, char **argv)
     topic.type = msg_type;
     topic.max_freq = max_freq;
     topic.max_bitrate = max_bitrate;
+    topic.fault_policy = fault_policy;
     topic.ip = srcIP;
     topic.port = srcPort;
     sendTopics.emplace_back(topic);
@@ -287,7 +298,7 @@ int main(int argc, char **argv)
       ROS_FATAL("[bridge_node] Send topics with the same srcPort %d in configuration!", srcPort);
       return 3;
     }
-    srcPorts.insert(srcPort); // for duplicate check 
+    srcPorts.insert(srcPort); // for duplicate check
     if (topic.name.at(0) != '/') {
       std::cout << ns;
       if (ns != "/") {std::cout << "/";}
@@ -296,6 +307,7 @@ int main(int argc, char **argv)
     if (topic.max_bitrate > 0.0) {
       std::cout << "  " << topic.max_bitrate << "bps(max)";
     }
+    std::cout << "  fault_policy=" << topic.fault_policy;
     std::cout << std::endl;
   }
 
@@ -306,6 +318,7 @@ int main(int argc, char **argv)
     XmlRpc::XmlRpcValue recv_topic_xml = recv_topics_xml[i];
     std::string topic_name = recv_topic_xml["topic_name"];
     std::string msg_type = recv_topic_xml["msg_type"];
+    std::string fault_policy = get_optional_string_param(recv_topic_xml, "fault_policy", "drop");
     std::string srcIP = ip_map[recv_topic_xml["srcIP"]];
     int srcPort = recv_topic_xml["srcPort"];
     TopicInfo topic;
@@ -313,6 +326,7 @@ int main(int argc, char **argv)
     topic.type = msg_type;
     topic.max_freq = 0;
     topic.max_bitrate = 0.0;
+    topic.fault_policy = fault_policy;
     topic.ip = srcIP;
     topic.port = srcPort;
     recvTopics.emplace_back(topic);
@@ -320,7 +334,8 @@ int main(int argc, char **argv)
       std::cout << ns;
       if (ns != "/") {std::cout << "/";}
     }  // print namespace prefix if topic.name is not global
-    std::cout << topic.name << "  (from " << recv_topic_xml["srcIP"]  << ")" << std::endl;
+    std::cout << topic.name << "  (from " << recv_topic_xml["srcIP"]  << ")"
+              << "  fault_policy=" << topic.fault_policy << std::endl;
   }
 
   // ********************* zmq socket initialize ***************************
@@ -360,11 +375,22 @@ int main(int argc, char **argv)
   }
 
   // ROS topic receive and publish
-  for (int32_t i=0; i < len_recv; ++i) 
+  for (int32_t i=0; i < len_recv; ++i)
   {
     ros::Publisher publisher;
     publisher = topic_publisher(recvTopics[i].name, recvTopics[i].type, nh_public);
     topic_pubs.emplace_back(publisher);
+  }
+
+  // ****************** initialize simulated node-fault control ************
+  initialize_node_fault_control(&publish_received_message);
+
+  double node_fault_duration = 0.0;
+  if (nh.getParam("node_fault_duration", node_fault_duration) && node_fault_duration > 0.0)
+  {
+    double node_fault_start_after = 0.0;
+    nh.param("node_fault_start_after", node_fault_start_after, 0.0);
+    schedule_node_fault(node_fault_start_after, node_fault_duration);
   }
 
   // ****************** launch bitrate-control send threads ****************
@@ -381,6 +407,8 @@ int main(int argc, char **argv)
   ros::spin();
 
   // ***************** stop send/receive ******************************
+  stop_node_fault_control();
+
   for (int32_t i=0; i < len_send; ++i){
     stop_send(i);
   }
