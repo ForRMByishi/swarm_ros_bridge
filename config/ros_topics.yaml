@@ -18,18 +18,21 @@ send_topics:
 - topic_name: /imu # send the messages of this ROS topic
   msg_type: sensor_msgs/Imu # ROS message type (rosmsg style)
   max_freq: 50 # max sending frequency (Hz) int
+  # max_bitrate: 0 # optional max sending bitrate (bps). Omitted or 0 means unlimited.
   srcIP: self # self IP
   srcPort: 3001 # ports of send_topics should be different
 
 - topic_name: /cmd_vel # send the messages of this ROS topic
   msg_type: geometry_msgs/Twist # ROS message type (rosmsg style)
   max_freq: 50 # max sending frequency (Hz) int
+  # max_bitrate: 0 # optional max sending bitrate (bps). Omitted or 0 means unlimited.
   srcIP: self # self IP
   srcPort: 3002 # ports of send_topics should be different
 
 - topic_name: /string # send the messages of this ROS topic
   msg_type: std_msgs/String # ROS message type (rosmsg style)
   max_freq: 10 # max sending frequency (Hz) int
+  # max_bitrate: 0 # optional max sending bitrate (bps). Omitted or 0 means unlimited.
   srcIP: self # self IP
   srcPort: 3003 # ports of send_topics should be different
 

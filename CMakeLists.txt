@@ -19,7 +19,10 @@ include_directories(
   ${catkin_INCLUDE_DIRS}
 )
 
-add_executable(bridge_node src/bridge_node.cpp)
+add_executable(bridge_node
+  src/bridge_node.cpp
+  src/sim_comm.cpp
+)
 
 target_link_libraries(bridge_node
    ${catkin_LIBRARIES}

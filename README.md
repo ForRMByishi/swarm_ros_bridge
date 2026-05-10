@@ -90,6 +90,8 @@ source devel/setup.bash
 
 - The `max_freq` will limit the sending frequency once it exceeds `max_freq`. Set `max_freq` large enough if you do not want to decrease the sending frequency.
 
+- The optional `max_bitrate` in `send_topics` limits the serialized ROS payload sending bitrate in bits per second. Omit it or set it to `0` to disable bitrate limiting. A negative value is invalid. When the bitrate-limited queue grows too large, the bridge drops the oldest queued messages first to avoid sending stale robot-control data.
+
 2. Launch the bridge_node:
 
 ```bash

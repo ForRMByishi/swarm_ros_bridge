@@ -22,6 +22,35 @@
  */
 
 #include "bridge_node.hpp"
+#include "sim_comm.hpp"
+
+#include <utility>
+
+std::string ns; // namespace of this node
+XmlRpc::XmlRpcValue ip_xml;
+XmlRpc::XmlRpcValue send_topics_xml;
+XmlRpc::XmlRpcValue recv_topics_xml;
+int len_send; // length(number) of send topics
+int len_recv; // length(number) of receive topics
+
+std::map<std::string, std::string> ip_map; // map host name and IP
+
+std::vector<TopicInfo> sendTopics; // send topics info struct vector
+std::vector<TopicInfo> recvTopics; // receive topics info struct vector
+
+zmqpp::context_t context;
+std::vector<std::unique_ptr<zmqpp::socket>> senders;   //index senders
+std::vector<std::unique_ptr<zmqpp::socket>> receivers; //index receivers
+
+std::vector<ros::Subscriber> topic_subs;
+std::vector<ros::Publisher> topic_pubs;
+
+std::vector<ros::Time> sub_t_last;
+std::vector<int> send_num;
+
+std::vector<bool> recv_thread_flags;
+std::vector<bool> recv_flags_last;
+std::vector<std::thread> recv_threads;
 
 // /* send messages frequency control */
 // // this is the original freq control func that has been deprecated
@@ -70,24 +99,16 @@ void sub_cb(const T &msg)
     return; // discard this message sending, abort
   }
 
-  /* serialize the sending messages into send_buffer */
+  /* serialize the sending message and hand it to the communication-control module */
   namespace ser = ros::serialization;
   size_t data_len = ser::serializationLength(msg); // bytes length of msg
-  std::unique_ptr<uint8_t> send_buffer(new uint8_t[data_len]);  // create a dynamic length array
-  ser::OStream stream(send_buffer.get(), data_len);
+  SimCommSendMessage send_message;
+  send_message.data_len = data_len;
+  send_message.data.resize(data_len);
+  ser::OStream stream(send_message.data.data(), data_len);
   ser::serialize(stream, msg);
 
-  /* zmq send message */
-  zmqpp::message send_array;
-  send_array << data_len; 
-  /* equal to:
-    send_array.add_raw(reinterpret_cast<void const*>(&data_len), sizeof(size_t));
-  */
-  send_array.add_raw(reinterpret_cast<void const *>(send_buffer.get()), data_len);
-  // std::cout << "ready send!" << std::endl;
-  // send(&, true) for non-blocking, send(&, false) for blocking
-  bool dont_block = false; // Actually for PUB mode zmq socket, send() will never block
-  senders[i]->send(send_array, dont_block);
+  dispatch_send_message(i, std::move(send_message));
   // std::cout << "send!" << std::endl;
 
   // std::cout << msg << std::endl;
@@ -164,9 +185,10 @@ void recv_func(int i)
 /* close recv socket, unsubscribe ROS topic */
 void stop_send(int i)
 {
+  topic_subs[i].shutdown(); // unsubscribe
+  stop_send_bitrate_control(i);
   // senders[i]->unbind(std::string const &endpoint);
   senders[i]->close(); // close the send socket
-  topic_subs[i].shutdown(); // unsubscribe
 }
 
 /* stop recv thread, close recv socket, unadvertise ROS topic */
@@ -243,9 +265,22 @@ int main(int argc, char **argv)
     std::string topic_name = send_topic_xml["topic_name"];
     std::string msg_type = send_topic_xml["msg_type"];
     int max_freq = send_topic_xml["max_freq"];
+    double max_bitrate = get_optional_numeric_param(send_topic_xml, "max_bitrate", 0.0);
+    if (max_bitrate < 0.0)
+    {
+      ROS_FATAL("[bridge_node] max_bitrate of send topic \"%s\" must be greater than or equal to 0!",
+                topic_name.c_str());
+      return 3;
+    }
     std::string srcIP = ip_map[send_topic_xml["srcIP"]];
     int srcPort = send_topic_xml["srcPort"];
-    TopicInfo topic = {.name=topic_name, .type=msg_type, .max_freq=max_freq, .ip=srcIP, .port=srcPort};
+    TopicInfo topic;
+    topic.name = topic_name;
+    topic.type = msg_type;
+    topic.max_freq = max_freq;
+    topic.max_bitrate = max_bitrate;
+    topic.ip = srcIP;
+    topic.port = srcPort;
     sendTopics.emplace_back(topic);
     // check for duplicate ports:
     if (srcPorts.find(srcPort) != srcPorts.end()) {
@@ -257,7 +292,11 @@ int main(int argc, char **argv)
       std::cout << ns;
       if (ns != "/") {std::cout << "/";}
     }  // print namespace prefix if topic.name is not global
-    std::cout << topic.name << "  " << topic.max_freq << "Hz(max)" << std::endl;
+    std::cout << topic.name << "  " << topic.max_freq << "Hz(max)";
+    if (topic.max_bitrate > 0.0) {
+      std::cout << "  " << topic.max_bitrate << "bps(max)";
+    }
+    std::cout << std::endl;
   }
 
   std::cout << "-------receive topics------" << std::endl;
@@ -267,10 +306,15 @@ int main(int argc, char **argv)
     XmlRpc::XmlRpcValue recv_topic_xml = recv_topics_xml[i];
     std::string topic_name = recv_topic_xml["topic_name"];
     std::string msg_type = recv_topic_xml["msg_type"];
-    int max_freq = recv_topic_xml["max_freq"];
     std::string srcIP = ip_map[recv_topic_xml["srcIP"]];
     int srcPort = recv_topic_xml["srcPort"];
-    TopicInfo topic = {.name=topic_name, .type=msg_type, .max_freq=max_freq, .ip=srcIP, .port=srcPort};
+    TopicInfo topic;
+    topic.name = topic_name;
+    topic.type = msg_type;
+    topic.max_freq = 0;
+    topic.max_bitrate = 0.0;
+    topic.ip = srcIP;
+    topic.port = srcPort;
     recvTopics.emplace_back(topic);
     if (topic.name.at(0) != '/') {
       std::cout << ns;
@@ -288,6 +332,7 @@ int main(int argc, char **argv)
     sender->bind(url);
     senders.emplace_back(std::move(sender)); //sender is now released by std::move
   }
+  initialize_send_bitrate_control(len_send);
 
   // receive sockets (zmq socket SUB mode)
   for (int32_t i=0; i < len_recv; ++i)
@@ -321,6 +366,9 @@ int main(int argc, char **argv)
     publisher = topic_publisher(recvTopics[i].name, recvTopics[i].type, nh_public);
     topic_pubs.emplace_back(publisher);
   }
+
+  // ****************** launch bitrate-control send threads ****************
+  start_send_bitrate_threads();
 
   // ****************** launch receive threads *****************************
   for (int32_t i=0; i < len_recv; ++i)
