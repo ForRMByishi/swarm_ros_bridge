@@ -1,0 +1,13 @@
+IP:
+  self: '*'
+  node_a: 172.28.0.2
+  node_b: 172.28.0.3
+
+send_topics: []
+
+recv_topics:
+  - topic_name: /string_recv
+    msg_type: std_msgs/String
+    max_freq: 0
+    srcIP: node_a
+    srcPort: 3003
