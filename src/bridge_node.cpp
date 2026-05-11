@@ -400,7 +400,7 @@ int main(int argc, char **argv)
     std::string topic_name = send_topic_xml["topic_name"];
     std::string msg_type = send_topic_xml["msg_type"];
     int max_freq = send_topic_xml["max_freq"];
-    double max_bitrate = get_optional_numeric_param(send_topic_xml, "max_bitrate", 0.0);
+    double max_bitrate = get_optional_bitrate_param(send_topic_xml, "max_bitrate", 0.0);
     std::string fault_policy = get_optional_string_param(send_topic_xml, "fault_policy", "drop");
     if (max_bitrate < 0.0)
     {

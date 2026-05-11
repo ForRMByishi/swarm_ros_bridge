@@ -9,7 +9,7 @@ send_topics:
     max_freq: 100000
     srcIP: self
     srcPort: 3003
-    max_bitrate: 100000
+    max_bitrate: "100k"
     # 如果你新增的带宽限制参数是按 topic 配置的，可以放这里。
     # 下面只是示例，字段名要改成你自己代码里读取的名字：
     # max_bandwidth_kbps: 512

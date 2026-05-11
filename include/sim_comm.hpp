@@ -69,6 +69,24 @@ double get_optional_numeric_param(XmlRpc::XmlRpcValue topic_xml,
                                   double default_value);
 
 /**
+ * 从单个话题配置中读取可选 bitrate 字段。
+ *
+ * Parameters:
+ *   topic_xml: 话题级 XmlRpc 配置对象。
+ *   field_name: 要读取的 bitrate 字段名。
+ *   default_value: 字段不存在时返回的默认值，单位 bps。
+ *
+ * Returns:
+ *   bitrate 数值，单位 bps。支持纯数字，也支持字符串后缀 k/K/m/M。
+ *
+ * Side Effects:
+ *   字段存在但格式非法时记录 ROS fatal 日志并退出。
+ */
+double get_optional_bitrate_param(XmlRpc::XmlRpcValue topic_xml,
+                                  const std::string &field_name,
+                                  double default_value);
+
+/**
  * 从单个话题配置中读取可选字符串字段。
  *
  * Parameters:

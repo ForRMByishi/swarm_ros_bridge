@@ -21,8 +21,10 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cctype>
 #include <cstdlib>
 #include <deque>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -118,6 +120,104 @@ void apply_fault_policy_to_buffer(SimCommFaultPolicy policy,
 
 // 故障窗口内消费发送侧消息；返回 true 表示消息已被故障策略处理。
 bool consume_send_message_if_fault_active(int topic_index, SimCommMessage &message);
+
+// 解析带 k/K/m/M 后缀的 bitrate 字符串，并统一换算为 bps。
+double parse_bitrate_text(const std::string &bitrate_text, const std::string &field_name);
+
+// 去除配置字符串首尾空白，便于容忍 YAML 中带引号的人工输入。
+std::string trim_copy(const std::string &text);
+
+/**
+ * 去除字符串首尾空白字符。
+ *
+ * Parameters:
+ *   text: 待处理字符串。
+ *
+ * Returns:
+ *   去除首尾空白后的字符串。
+ *
+ * Side Effects:
+ *   None.
+ */
+std::string trim_copy(const std::string &text)
+{
+  size_t begin = 0;
+  while (begin < text.size() && std::isspace(static_cast<unsigned char>(text[begin])))
+  {
+    ++begin;
+  }
+
+  size_t end = text.size();
+  while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1])))
+  {
+    --end;
+  }
+
+  return text.substr(begin, end - begin);
+}
+
+/**
+ * 解析带可选单位后缀的 bitrate 字符串。
+ *
+ * Parameters:
+ *   bitrate_text: YAML 中读取到的 bitrate 字符串，例如 "100k" 或 "1M"。
+ *   field_name: 字段名，用于错误日志定位。
+ *
+ * Returns:
+ *   换算后的 bitrate，单位 bps。
+ *
+ * Side Effects:
+ *   字符串为空或格式非法时记录 ROS fatal 日志并退出。
+ */
+double parse_bitrate_text(const std::string &bitrate_text, const std::string &field_name)
+{
+  std::string normalized_text = trim_copy(bitrate_text);
+  if (normalized_text.empty())
+  {
+    ROS_FATAL("[bridge_node] Optional bitrate config \"%s\" must not be empty!", field_name.c_str());
+    exit(1);
+  }
+
+  double multiplier = 1.0;
+  const char suffix = normalized_text.back();
+
+  // k/K 表示 1000，m/M 表示 1000k，按通信码率常用十进制单位解析。
+  if (suffix == 'k' || suffix == 'K' || suffix == 'm' || suffix == 'M')
+  {
+    normalized_text.pop_back();
+    multiplier = (suffix == 'k' || suffix == 'K') ? 1000.0 : 1000000.0;
+  }
+
+  normalized_text = trim_copy(normalized_text);
+  if (normalized_text.empty())
+  {
+    ROS_FATAL("[bridge_node] Optional bitrate config \"%s\" has no numeric value!", field_name.c_str());
+    exit(1);
+  }
+
+  try
+  {
+    // stod 允许部分解析，因此检查 parsed_chars，避免 "1kb" 被误接受。
+    size_t parsed_chars = 0;
+    const double base_value = std::stod(normalized_text, &parsed_chars);
+    if (parsed_chars != normalized_text.size())
+    {
+      ROS_FATAL("[bridge_node] Optional bitrate config \"%s\" has invalid value \"%s\"!",
+                field_name.c_str(),
+                bitrate_text.c_str());
+      exit(1);
+    }
+
+    return base_value * multiplier;
+  }
+  catch (const std::exception &)
+  {
+    ROS_FATAL("[bridge_node] Optional bitrate config \"%s\" has invalid value \"%s\"!",
+              field_name.c_str(),
+              bitrate_text.c_str());
+    exit(1);
+  }
+}
 
 /**
  * 将字符串策略转换为内部枚举。
@@ -673,6 +773,48 @@ double get_optional_numeric_param(XmlRpc::XmlRpcValue topic_xml,
   }
 
   ROS_FATAL("[bridge_node] Optional config \"%s\" must be a number!", field_name.c_str());
+  exit(1);
+}
+
+/**
+ * 从单个话题配置中读取可选 bitrate 字段。
+ *
+ * Parameters:
+ *   topic_xml: 话题级 XmlRpc 配置对象。
+ *   field_name: 要读取的 bitrate 字段名。
+ *   default_value: 字段不存在时返回的默认值，单位 bps。
+ *
+ * Returns:
+ *   bitrate 数值，单位 bps。支持纯数字，也支持字符串后缀 k/K/m/M。
+ *
+ * Side Effects:
+ *   字段存在但格式非法时记录 ROS fatal 日志并退出。
+ */
+double get_optional_bitrate_param(XmlRpc::XmlRpcValue topic_xml,
+                                  const std::string &field_name,
+                                  double default_value)
+{
+  if (!topic_xml.hasMember(field_name))
+  {
+    return default_value;
+  }
+
+  XmlRpc::XmlRpcValue field_value = topic_xml[field_name];
+  if (field_value.getType() == XmlRpc::XmlRpcValue::TypeInt)
+  {
+    return static_cast<int>(field_value);
+  }
+  if (field_value.getType() == XmlRpc::XmlRpcValue::TypeDouble)
+  {
+    return static_cast<double>(field_value);
+  }
+  if (field_value.getType() == XmlRpc::XmlRpcValue::TypeString)
+  {
+    return parse_bitrate_text(static_cast<std::string>(field_value), field_name);
+  }
+
+  ROS_FATAL("[bridge_node] Optional bitrate config \"%s\" must be a number or a string with k/m suffix!",
+            field_name.c_str());
   exit(1);
 }
 

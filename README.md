@@ -90,7 +90,7 @@ source devel/setup.bash
 
 - The `max_freq` will limit the sending frequency once it exceeds `max_freq`. Set `max_freq` large enough if you do not want to decrease the sending frequency.
 
-- The optional `max_bitrate` in `send_topics` limits the serialized ROS payload sending bitrate in bits per second. Omit it or set it to `0` to disable bitrate limiting. A negative value is invalid. When the bitrate-limited queue grows too large, the bridge drops the oldest queued messages first to avoid sending stale robot-control data.
+- The optional `max_bitrate` in `send_topics` limits the serialized ROS payload sending bitrate in bits per second. Omit it or set it to `0` to disable bitrate limiting. A negative value is invalid. It can be configured as a number such as `100000`, or as a string with a decimal suffix such as `"100k"` or `"1m"`; `k/K` means 1000 and `m/M` means 1000k. When the bitrate-limited queue grows too large, the bridge drops the oldest queued messages first to avoid sending stale robot-control data.
 
 - The optional `fault_policy` in both `send_topics` and `recv_topics` controls how messages are handled during a simulated node-level network fault. Supported values are `drop`, `buffer`, and `latest`; omitted values default to `drop`. During a node fault, send-side messages are held before ZMQ send, and receive-side messages are held before publishing to local ROS topics. When the fault recovers, cached send-side messages are replayed at 2x the topic `max_freq`; cached receive-side messages are replayed fast enough to drain within about half of the fault duration.
 

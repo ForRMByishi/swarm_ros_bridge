@@ -27,7 +27,7 @@ send_topics:
 - topic_name: chatter # send the messages of this ROS topic
   msg_type: std_msgs/String # ROS message type (rosmsg style)
   max_freq: 1000 # max sending frequency (Hz) int
-  # max_bitrate: 0 # optional max sending bitrate (bps). Omitted or 0 means unlimited.
+  # max_bitrate: 0 # optional max sending bitrate (bps). Omitted or 0 means unlimited. Supports "100k" and "1m".
   # fault_policy: buffer # optional simulated node-fault policy: drop, buffer, or latest.
   srcIP: self # self IP
   srcPort: 3001 # ports of send_topics should be different
