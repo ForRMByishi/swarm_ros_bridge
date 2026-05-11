@@ -1,13 +1,46 @@
+### node_b 示例配置模板
+### 默认支持的 ROS 消息类型：
+# sensor_msgs/Imu
+# geometry_msgs/Twist
+# std_msgs/String
+# 如需更多类型，请在 include/ros_sub_pub.hpp 中添加。
+### send_topics 最大支持数量：50
+
+### 可选：启动后自动触发一次节点级模拟断链，用于固定场景演示。
+### 默认关闭；取消注释后，bridge 启动 node_fault_start_after 秒后进入故障，
+### 并持续 node_fault_duration 秒。
+# node_fault_start_after: 5.0
+# node_fault_duration: 2.0
+
+### 可选：远程控制服务，用于从实验控制机触发节点级模拟断链。
+### 默认关闭，避免单机多节点或 Docker host 网络下出现控制端口冲突。
+### control_node_id 用于匹配 trigger_fault.py --target。
+### control_bind_ip 通常使用 '*' 监听全部网卡；同一宿主机多进程时端口需不同。
+### control_token 为空字符串表示不校验 token；不要写成空值 control_token: 。
+# control_enabled: true
+# control_node_id: node_b
+# control_bind_ip: '*'
+# control_bind_port: 3999
+# control_token: ""
+
+### IP 列表：左侧是配置中使用的逻辑名，右侧是真实 IP 或通配地址。
+### Docker 测试时请根据容器实际 IP 修改 node_a/node_b。
 IP:
   self: '*'
   node_a: 172.28.0.2
   node_b: 172.28.0.3
 
+####### node_b 发送到远端的 ROS 话题 #######
+## node_b 当前示例只接收不发送；如需发送，可参考 bw_node_a.yaml 添加 send_topics。
 send_topics: []
 
+####### node_b 从 node_a 接收的 ROS 话题 #######
+## 如不需要接收话题，可将 recv_topics 改为：recv_topics: []
 recv_topics:
-  - topic_name: /string_recv
-    msg_type: std_msgs/String
-    max_freq: 0
-    srcIP: node_a
-    srcPort: 3003
+- topic_name: /string_recv
+  msg_type: std_msgs/String
+  ### 可选：节点级模拟断链期间的接收侧策略。
+  ### drop=丢弃，buffer=全部缓存后恢复回放，latest=只保留最新一条。
+  # fault_policy: buffer
+  srcIP: node_a
+  srcPort: 3003
