@@ -38,6 +38,8 @@ install(TARGETS bridge_node
 
 # scripts
 install(PROGRAMS
+	scripts/bw_pub.py
+	scripts/bw_sub.py
 	scripts/listener.py
 	scripts/talker.py
 	scripts/trigger_fault.py
