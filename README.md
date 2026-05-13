@@ -1,196 +1,251 @@
-# swarm_ros_bridge
+# 通信控制功能配置说明
 
-> :heavy_exclamation_mark: (Updated on 2026.3.20) The author strongly recommend you to move to the zenoh ROS bridge, which has automatic ROS topic discovery mechanism and better port management. ROS1 zenoh bridge: https://github.com/eclipse-zenoh/zenoh-plugin-ros1   ROS2 zenoh bridge: https://github.com/eclipse-zenoh/zenoh-plugin-ros2dds  But the topic remapping and throttling is better in swarm_ros_bridge.
+本文面向使用者，说明本仓库新增通信控制配置项的含义、使用方式和可能产生的影响。阅读本文不需要了解内部实现细节，只需要知道如何配置、配置后系统会怎样表现。
 
-## Introduction
+## 功能概览
 
-A lightweight middle interface ROS package mainly based on [ZeroMQ](https://zeromq.org). It enables the specified ROS messages transmission among swarm robots through socket communication. The purpose of this package is to replace the traditional way of [running ROS across multiple machines in ROS1](https://wiki.ros.org/ROS/Tutorials/MultipleMachines), which has some drawbacks under swarm robots situation.
+新增功能主要分为三类：
 
-An example of two ROS robots communicating with each other through swarm_ros_bridge is shown below:
+- 发送带宽限制：通过 `max_bitrate` 控制某个发送话题的最大发送码率。
+- 模拟节点断链：通过 `fault_policy`、`node_fault_start_after`、`node_fault_duration` 模拟节点级网络中断期间的消息处理。
+- 远程触发断链：通过 `control_enabled` 等配置开启控制端口，再用 `trigger_fault.py` 从外部触发指定节点断链。
 
-![framework](pictures/swarm_ros_bridge_framework.png)
+这些功能默认不改变原有通信行为。只有显式配置对应字段后才会生效。
 
-Compared with ROS1 multi-robot wireless communication, it has the following benefits:
+## 发送带宽限制
 
--  **Robust**: No need for base station ROS master launching first. Support each robot launching in a random sequence and connecting each other autonomously.
+`max_bitrate` 是 `send_topics` 内的可选字段，用于限制某个发送话题的序列化 ROS payload 发送码率。
 
--  **Flexible**:  You can choose the sending/receiving ROS topics rather than transferring all topic (names) as ROS1 does.
+示例：
 
--  **Easy to use**:  Specify all the IP and ROS topics in one configuration file.
+```yaml
+send_topics:
+- topic_name: /string
+  msg_type: std_msgs/String
+  max_freq: 1000
+  max_bitrate: "100k"
+  srcIP: self
+  srcPort: 3003
+```
 
-Compared with ROS2 DDS communication, it may have the following benefits:
+配置含义：
 
--  **Lightweight**: It is a small ROS bridge node subscribing and sending remote ROS topics, so connecting with other ROS nodes is easy.
--  **Reliable**: It uses ZeroMQ socket communication based on TCP protocol while ROS2 is based on DDS, whose default protocol is UDP (unreliable). DDS is mainly designed for data exchange between native processes under wired communication rather than remote wireless communication.
+- 不配置 `max_bitrate`：不限制带宽。
+- `max_bitrate: 0`：不限制带宽。
+- `max_bitrate: 100000`：限制为 100000 bps。
+- `max_bitrate: "100k"`：限制为 100000 bps。
+- `max_bitrate: "1m"`：限制为 1000000 bps。
 
-ROS wiki page: https://wiki.ros.org/swarm_ros_bridge
+单位规则：
 
-source code: https://github.com/shupx/swarm_ros_bridge.git
+- `1k = 1000`
+- `1m = 1000k = 1000000`
+- `k` 和 `m` 不区分大小写，例如 `"100K"`、`"1M"` 都可以。
 
-csdn blog (in chinese): https://blog.csdn.net/benchuspx/article/details/128576723
+行为影响：
 
+- 当发送速率低于 `max_bitrate` 时，消息基本按原流程发送。
+- 当发送速率超过 `max_bitrate` 时，消息会在发送端排队并延迟发送。
+- 如果队列积压过多，系统会丢弃最早进入队列的旧消息，避免无人车控制链路收到过期数据。
 
-## Structure
+建议：
+
+- 实时控制类话题优先使用较高 `max_bitrate`，避免人为引入过大延迟。
+- 状态、日志、低频感知类话题更适合做带宽限制。
+- 如果只想限制消息频率，继续使用原有 `max_freq` 即可。
+
+## 模拟节点断链
+
+节点断链模拟用于测试类似 WiFi 切换 4G、短时网络不可用、节点通信临时中断等场景。它是节点级效果：故障期间，该 bridge 的发送侧和接收侧都会按各话题配置处理消息。
+
+### 固定启动演示
+
+可以通过全局参数让 bridge 启动后自动触发一次断链：
+
+```yaml
+node_fault_start_after: 5.0
+node_fault_duration: 2.0
+```
+
+配置含义：
+
+- `node_fault_start_after`：bridge 启动多少秒后进入模拟断链。
+- `node_fault_duration`：模拟断链持续多少秒。
+
+不配置 `node_fault_duration` 或配置为非正数时，不会自动触发断链。
+
+### 话题故障策略
+
+`fault_policy` 是 `send_topics` 和 `recv_topics` 内的可选字段，用于决定模拟断链期间该话题消息如何处理。
+
+发送侧示例：
+
+```yaml
+send_topics:
+- topic_name: /string
+  msg_type: std_msgs/String
+  max_freq: 1000
+  fault_policy: buffer
+  srcIP: self
+  srcPort: 3003
+```
+
+接收侧示例：
+
+```yaml
+recv_topics:
+- topic_name: /string_recv
+  msg_type: std_msgs/String
+  fault_policy: buffer
+  srcIP: node_a
+  srcPort: 3003
+```
+
+可选值：
+
+- `drop`：故障期间直接丢弃消息。
+- `buffer`：故障期间缓存消息，恢复后回放。
+- `latest`：故障期间只保留最新一条消息，恢复后只发送或提交这一条。
+
+默认值：
+
+- 不配置 `fault_policy` 时，默认是 `drop`。
+
+策略选择建议：
+
+- 强实时控制话题：建议 `drop` 或 `latest`，避免恢复后执行过期控制指令。
+- 状态快照话题：建议 `latest`，恢复后拿到最新状态即可。
+- 日志、事件、低频业务数据：可以使用 `buffer`，尽量保留故障期间的数据。
+
+恢复行为：
+
+- 发送侧 `buffer` 缓存会在恢复后加速发送，当前按话题 `max_freq` 的 2 倍节奏回放。
+- 接收侧 `buffer` 缓存会在恢复后加速提交给本机 ROS 上层，目标是在约半个故障时长内清空缓存。
+- 恢复期间会优先释放缓存，再处理新到达消息，减少消息顺序歧义。
+
+## 远程触发节点断链
+
+远程触发适合多车、多节点或 Docker/WiFi 局域网测试场景。每个被控 bridge 可以开启一个轻量控制端口，实验控制机通过 IP 和端口触发指定节点断链。
+
+### 被控节点配置
+
+在被控节点 YAML 中配置：
+
+```yaml
+control_enabled: true
+control_node_id: node_a
+control_bind_ip: '*'
+control_bind_port: 3999
+control_token: ""
+```
+
+配置含义：
+
+- `control_enabled`：是否开启远程控制服务。默认关闭。
+- `control_node_id`：当前节点的逻辑 ID，用于匹配远程命令中的 `--target`。
+- `control_bind_ip`：控制服务监听地址。通常使用 `'*'` 监听全部网卡。
+- `control_bind_port`：控制服务 TCP 端口。
+- `control_token`：可选共享 token。为空字符串 `""` 表示不校验 token。
+
+注意：
+
+- 不要写成 `control_token:` 空值形式。ROS1 参数服务器不能稳定处理 YAML null，建议写 `control_token: ""` 或直接注释掉。
+- 同一台宿主机上运行多个 bridge 且共享网络命名空间时，`control_bind_port` 不能重复。
+- Docker 非 host 网络下，不同容器有各自网络命名空间，容器内部端口可以相同；如果映射到宿主机，则宿主机端口不能冲突。
+
+### 触发命令
+
+无 token 示例：
 
 ```bash
-└── swarm_ros_bridge
-    ├── CMakeLists.txt
-    ├── config
-    │   └── ros_topics.yaml  # Config file to specify send/receive ROS topics
-    ├── include
-    │   ├── bridge_node.hpp  # Header file of bridge_node.cpp
-    │   ├── ros_sub_pub.hpp  # Header file for different ROS message type.
-    ├── launch
-    │   └── test.launch
-    ├── package.xml
-    └── src
-        └── bridge_node.cpp  # @brief Reliable TCP bridge for ros data transfer in unstable network.
-                             # It will send/receive the specified ROS topics in ../config/ros_topics.yaml
-                             # It uses zmq socket(PUB/SUB mode), which reconnects others autonomously and
-                             # supports 1-N pub-sub connection even with TCP protocol.
+rosrun swarm_ros_bridge trigger_fault.py \
+  --ip 172.28.0.2 \
+  --port 3999 \
+  --duration 2.0 \
+  --target node_a
 ```
 
-
-## Install
-
-**Supported platforms/releases**:
-
-| Platform                                                   | ROS Release                                                    |
-| ---------------------------------------------------------- | -------------------------------------------------------------- |
-| [Ubuntu 16.04 Xenial](https://releases.ubuntu.com/16.04.4/) | [ROS Kinetic](https://wiki.ros.org/kinetic/Installation/Ubuntu) |
-| [Ubuntu 18.04 Bionic](https://releases.ubuntu.com/18.04/) | [ROS Melodic](https://wiki.ros.org/melodic/Installation/Ubuntu) |
-| [Ubuntu 20.04 Focal](https://releases.ubuntu.com/20.04/) | [ROS Noetic](https://wiki.ros.org/noetic/Installation/Ubuntu) |
-
-**Install process**:
+带 token 示例：
 
 ```bash
-## clone this package
-mkdir -p swarm_ros_bridge_ws/src  # or your own ros workspace
-cd swarm_ros_bridge_ws/src
-git clone https://gitee.com/shu-peixuan/swarm_ros_bridge.git
-# or 'git clone https://github.com/shupx/swarm_ros_bridge.git'
-
-## install dependencies
-sudo apt install libzmqpp-dev
-# or 'rosdep install --from-path swarm_ros_bridge/'
-
-## build
-cd ../
-catkin_make
-source devel/setup.bash
+rosrun swarm_ros_bridge trigger_fault.py \
+  --ip 192.168.1.101 \
+  --port 3999 \
+  --duration 2.0 \
+  --target node_a \
+  --token test-lab-token
 ```
 
+参数含义：
 
-## Usage
+- `--ip`：被控节点 IP。
+- `--port`：被控节点 `control_bind_port`。
+- `--duration`：本次断链持续时间，单位秒。
+- `--target`：目标节点逻辑 ID，应与被控节点 `control_node_id` 一致。
+- `--token`：可选 token，应与被控节点 `control_token` 一致。
 
-1. Specify the IP and ROS topic information in `config/ros_topics.yaml`. 
+成功响应示例：
 
-- For the sending topic, IP is self IP (* for example) and port should be different as it binds to the "tcp://*:port". 
-- For the receiving topic, IP and port should be the remote source IP and port as it connects to the "tcp://srcIP:srcPort".
-
-- The `max_freq` will limit the sending frequency once it exceeds `max_freq`. Set `max_freq` large enough if you do not want to decrease the sending frequency.
-
-- The optional `max_bitrate` in `send_topics` limits the serialized ROS payload sending bitrate in bits per second. Omit it or set it to `0` to disable bitrate limiting. A negative value is invalid. It can be configured as a number such as `100000`, or as a string with a decimal suffix such as `"100k"` or `"1m"`; `k/K` means 1000 and `m/M` means 1000k. When the bitrate-limited queue grows too large, the bridge drops the oldest queued messages first to avoid sending stale robot-control data.
-
-- The optional `fault_policy` in both `send_topics` and `recv_topics` controls how messages are handled during a simulated node-level network fault. Supported values are `drop`, `buffer`, and `latest`; omitted values default to `drop`. During a node fault, send-side messages are held before ZMQ send, and receive-side messages are held before publishing to local ROS topics. When the fault recovers, cached send-side messages are replayed at 2x the topic `max_freq`; cached receive-side messages are replayed fast enough to drain within about half of the fault duration.
-
-- For a fixed startup demo, set private params `node_fault_start_after` and `node_fault_duration`. For example, `node_fault_start_after: 5.0` and `node_fault_duration: 2.0` simulates a 2-second node-level network fault 5 seconds after the bridge starts.
-
-- For remote WiFi LAN tests, enable the optional control server with `control_enabled: true`, set `control_node_id`, `control_bind_ip`, `control_bind_port`, and optionally `control_token`, then trigger a fault from another machine:
-
-```bash
-rosrun swarm_ros_bridge trigger_fault.py --ip 192.168.1.101 --port 3999 --duration 2.0 --target robot1 --token test-lab-token
+```text
+ok=true;node_id=node_a;message=node_fault_started;duration_sec=2
 ```
 
-2. Launch the bridge_node:
+常见失败响应：
 
-```bash
-roslaunch swarm_ros_bridge test.launch # local machine test
+- `target_mismatch`：`--target` 与节点 `control_node_id` 不一致。
+- `unauthorized`：token 不匹配。
+- `invalid_duration_sec`：`--duration` 非法或小于等于 0。
+- `node_fault_busy`：节点正在故障或正在恢复回放，暂时拒绝新的故障触发。
+
+## 配置模板建议
+
+发送端示例：
+
+```yaml
+IP:
+  self: '*'
+  node_a: 172.28.0.2
+  node_b: 172.28.0.3
+
+send_topics:
+- topic_name: /string
+  msg_type: std_msgs/String
+  max_freq: 1000
+  # max_bitrate: "100k"
+  # fault_policy: buffer
+  srcIP: self
+  srcPort: 3003
+
+recv_topics: []
 ```
 
-3. Publish messages into send_topics and check that remote recv_topics are receiving these messages. The console will also print INFO the first time recv_topics receive messages.
+接收端示例：
 
+```yaml
+IP:
+  self: '*'
+  node_a: 172.28.0.2
+  node_b: 172.28.0.3
 
-We also provide a simple latency test demo between two machines. Please refer to [scripts/README.md](https://github.com/shupx/swarm_ros_bridge/tree/master/scripts/README.md)
+send_topics: []
 
-
-## Advanced
-
-### * More ROS message types
-
-The default supported ROS message types are only `sensor_msgs/Imu` , `geometry_msgs/Twist` and `std_msgs/String`. If you need more types:
-
-1. Modify the macros about MSG_TYPEx and MSG_CLASSx in `include/ros_sub_pub.hpp`, then it will generate template functions for different ros message types.  
-
-```cpp
-// In ros_sub_pub.hpp
-// uncomment and modify the following lines:
-#include <xxx_msgs/yy.h>
-#define MSG_TYPE4 "xxx_msgs/yy"
-#define MSG_CLASS4 xxx_msgs::yy
+recv_topics:
+- topic_name: /string_recv
+  msg_type: std_msgs/String
+  # fault_policy: buffer
+  srcIP: node_a
+  srcPort: 3003
 ```
 
-We support up to 10 types modification. If that is still not enough, then you should modify the `topic_subscriber()`, `topic_publisher()` and `deserialize_publish()` in `include/ros_sub_pub.hpp` according to their styles.
+更完整的 node_a/node_b 示例可参考：
 
-2. Add the dependent package in find_package() of `CMakeLists.txt`:
+- `config/bw_node_a.yaml`
+- `config/bw_node_b.yaml`
 
-```sh
-# in CMakeLists.txt
-find_package(catkin REQUIRED COMPONENTS
-  roscpp
-  std_msgs
-  geometry_msgs
-  sensor_msgs
-  xxx_msgs
-)
-```
+## 简要实现说明
 
-3. Recompile:
+新增功能位于 bridge 的通信控制层。发送消息在真正写入 ZMQ 之前，会经过频率控制、可选带宽控制和可选故障策略处理。接收消息在从 ZMQ 收到后、发布到本机 ROS topic 前，也会经过故障策略处理。
 
-```bash
-cd swarm_ros_bridge_ws/
-catkin_make
-```
+远程控制使用一个独立的 ZMQ REP 控制端口。控制端口只负责接收触发命令和校验参数，真正的断链期间缓存、丢弃和恢复逻辑仍由通信控制模块统一执行。
 
-### * More send_topics
-
-We support up to 50 send_topics. Modify the following lines in `include/ros_sub_pub.hpp` if you need more.
-
-```cpp
-// in ros_sub_pub.hpp
-# define SUB_MAX 50 // max number of subscriber callbacks
-//...
-template <typename T>
-void (*sub_callbacks[])(const T &)=
-{
-  sub_cb<T,0>, sub_cb<T,1>, ... //add more
-};
-
-```
-
-Then recompile:
-
-```bash
-cd swarm_ros_bridge_ws/
-catkin_make
-```
-
-## Future Work
-
-1.  Dynamic RPC, including dynamic node discovery, online topic change, and ground station monitor.
-2.  Support UDP protocol for mass data transmission like video streams. 
-3.  Support ROS service transmission with ZeroMQ request-reply mode.
-4.  Support ROS2 topic and service transmission.
-
-
-## Contributor
-
-Peixuan Shu (shupeixuan@qq.com), PhD, beihang university, China, 2023.1.1
-
-This package is personally developed by Peixuan Shu (PhD, beihang  university, China) on Jan. 2023. Any question/suggestion is welcomed at [swarm_ros_bridge issue](https://github.com/shupx/swarm_ros_bridge/issues) or [shupeixuan@qq.com](mailto:shupeixuan@qq.com). 
-
-Some applications:
-
- **pyugvswarm** : a python package wrapper around unmanned ground vehicle (UGV) swarm positioning / communication / control ROS1 nodes. https://pyugvswarm.readthedocs.io/en/latest/overview.html
-
-![img1](pictures/img1.png)
+因此，正常情况下不配置这些新字段时，bridge 会保持原有行为；只有开启对应配置后，才会引入限速、模拟故障或远程触发能力。
