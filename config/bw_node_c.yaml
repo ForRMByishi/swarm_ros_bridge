@@ -1,0 +1,21 @@
+IP:
+  self: '*'
+  node_a: 172.28.0.2
+  node_c: 172.28.0.4
+
+send_topics: []
+
+### optional remote control server for simulated node-level network fault
+control_enabled: true # disabled by default to avoid port conflicts on one host
+control_node_id: node_a # optional logical node id used by trigger_fault.py --target
+control_bind_ip: '*' # usually '*' for WiFi LAN tests
+control_bind_port: 3999 # each bridge process on the same host needs a different port
+control_token: "" # optional shared token; empty means no token check
+
+recv_topics:
+  - topic_name: /string_recv
+    msg_type: std_msgs/String
+    max_freq: 0
+    srcIP: node_a
+    srcPort: 3003
+    fault_policy: buffer
